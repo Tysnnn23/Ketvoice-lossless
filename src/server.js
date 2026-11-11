@@ -107,7 +107,7 @@ function authError(res) {
 }
 
 async function searchAll(q, quality, fast = false) {
-  const key = (fast ? 'fast:' : '') + quality + ':' + q.toLowerCase().replace(/\s+/g, ' ');
+  const key = quality + ':' + q.toLowerCase().replace(/\s+/g, ' ');
   const cached = cacheGet(key);
   if (cached) return cached;
 
@@ -140,9 +140,9 @@ async function searchAll(q, quality, fast = false) {
   }
 
   if (fast) {
-    const { tracks, complete } = await collectEarly(jobs);
-    // Fast results have their own cache; they must never hide Qobuz in /search.
-    complete.then(rows => cacheSet(key, rows));
+    const { tracks, complete } = await collectEarly(jobs, 2500, 150);
+    // Partial results are never cached: a later /search must still include Qobuz.
+    complete.catch(() => {});
     return tracks;
   }
   const groups = await Promise.all(jobs);
