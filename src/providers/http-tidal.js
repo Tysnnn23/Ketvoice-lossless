@@ -1,4 +1,4 @@
-const DEFAULT_TIMEOUT = 12000;
+﻿const DEFAULT_TIMEOUT = 45000;
 
 function baseUrl() {
   return String(process.env.TIDAL_API_URL || '').trim().replace(/\/$/, '');
@@ -110,3 +110,6 @@ export async function tidalHealth() {
     return { enabled: true, configured: true, ok: false, error: String(error.message || error) };
   }
 }
+
+
+
