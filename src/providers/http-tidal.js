@@ -1,4 +1,4 @@
-﻿const DEFAULT_TIMEOUT = 45000;
+const DEFAULT_TIMEOUT = 45000;
 
 function baseUrl() {
   return String(process.env.TIDAL_API_URL || '').trim().replace(/\/$/, '');
@@ -77,28 +77,82 @@ export async function tidalSearch(query, limit = 25) {
 
 export async function tidalResolveStream(id, quality = 'lossless') {
   const rawId = String(id).replace(/^tidal:/, '');
-  const data = await request('/track/', { id: rawId, quality: qualityToTidal(quality) });
+  if (!/^\d+$/.test(rawId)) throw new Error('Invalid track ID');
+
+  const data = await request('/track/', {
+    id: rawId,
+    quality: 'LOSSLESS'
+  });
+
   const track = data?.data;
-  if (!track) throw new Error('Tidal track not found');
+  if (!track?.manifest) throw new Error('Missing Tidal manifest');
 
-  let decoded = decodeManifest(track.manifest);
-  let url = decoded?.urls?.[0];
-  if (!url && typeof track.manifest === 'string' && /^https?:\/\//.test(track.manifest)) url = track.manifest;
-  if (!url) throw new Error('Tidal response did not contain a playable URL');
+  if (track.manifestMimeType === 'application/dash+xml') {
+    const xml = Buffer.from(track.manifest, 'base64').toString('utf8');
 
-  const codec = decoded?.codecs || decoded?.codec || (track.audioQuality === 'LOSSLESS' ? 'flac' : 'flac');
+    if (!xml.includes('<MPD') || xml.includes('<ContentProtection')) {
+      throw new Error('Unsupported or protected DASH manifest');
+    }
+
+    const origin = String(process.env.PUBLIC_BASE_URL || 'http://localhost:8080')
+      .replace(/\/$/, '');
+
+    return {
+      url: `${origin}/tidal-mpd/${rawId}?quality=low`,
+      format: 'dash',
+      manifest: 'dash',
+      mimeType: 'application/dash+xml',
+      codec: 'flac',
+      container: 'mp4',
+      quality: 'lossless',
+      encrypted: false,
+      sampleRate: track.sampleRate,
+      bitDepth: track.bitDepth
+    };
+  }
+
+  const decoded = decodeManifest(track.manifest);
+  const url = decoded?.urls?.[0];
+
+  if (!url || decoded.encryptionType !== 'NONE') {
+    throw new Error('No supported unprotected audio URL');
+  }
+
   return {
     url,
     format: 'flac',
-    quality: String(track.audioQuality || quality).toLowerCase(),
-    codec: String(codec).toLowerCase(),
+    manifest: 'none',
+    codec: 'flac',
     container: 'flac',
-    manifest: track.manifestMimeType || undefined,
-    encrypted: String(decoded?.encryptionType || 'NONE').toUpperCase() !== 'NONE',
-    sampleRate: Number(track.sampleRate || 0) || undefined,
-    bitDepth: Number(track.bitDepth || 0) || undefined,
-    bitrate: Number(track.bitrate || 0) || undefined
+    quality: 'lossless',
+    encrypted: false,
+    sampleRate: track.sampleRate,
+    bitDepth: track.bitDepth
   };
+}
+
+export async function tidalDashManifest(id) {
+  if (!/^\d+$/.test(String(id))) {
+    throw new Error('Invalid track ID');
+  }
+
+  const data = await request('/track/', {
+    id,
+    quality: 'LOSSLESS'
+  });
+
+  const track = data?.data;
+  if (track?.manifestMimeType !== 'application/dash+xml') {
+    throw new Error('DASH not available');
+  }
+
+  const xml = Buffer.from(track.manifest, 'base64').toString('utf8');
+
+  if (!xml.includes('<MPD') || xml.includes('<ContentProtection')) {
+    throw new Error('Unsupported or protected DASH manifest');
+  }
+
+  return xml;
 }
 
 export async function tidalHealth() {

@@ -2,7 +2,7 @@ import http from 'node:http';
 import { URL } from 'node:url';
 import { SpotiFLACQobuzHost } from './spotiflac-qobuz-host.js';
 import { amazonConfigured, amazonHealth, amazonResolveStream, amazonSearch } from './providers/http-amazon.js';
-import { tidalConfigured, tidalHealth, tidalResolveStream, tidalSearch } from './providers/http-tidal.js';
+import { tidalConfigured, tidalHealth, tidalResolveStream, tidalDashManifest, tidalSearch } from './providers/http-tidal.js';
 
 const PORT = Number(process.env.PORT || 8080);
 const NAME = process.env.ADDON_NAME || 'SpotiFLAC Multi-Source Lossless';
@@ -218,6 +218,25 @@ async function handle(req, res) {
     return json(res, 200, { tracks });
   }
 
+  if (u.pathname.startsWith('/tidal-mpd/')) {
+    const id = u.pathname.slice('/tidal-mpd/'.length);
+
+    if (!/^\d+$/.test(id)) {
+      return json(res, 400, { error: 'invalid_track_id' });
+    }
+
+    try {
+      const xml = await tidalDashManifest(id);
+      res.writeHead(200, {
+        'content-type': 'application/dash+xml',
+        'cache-control': 'private, no-store'
+      });
+      return res.end(xml);
+    } catch (error) {
+      console.error('[Tidal DASH]', error.message);
+      return json(res, 502, { error: 'dash_unavailable' });
+    }
+  }
   if (u.pathname.startsWith('/stream/')) {
     const encoded = u.pathname.slice('/stream/'.length);
     const id = decodeURIComponent(encoded);
