@@ -3,6 +3,7 @@ import { URL } from 'node:url';
 import { SpotiFLACQobuzHost } from './spotiflac-qobuz-host.js';
 import { amazonConfigured, amazonHealth, amazonResolveStream, amazonSearch } from './providers/http-amazon.js';
 import { tidalConfigured, tidalHealth, tidalResolveStream, tidalDashManifest, tidalSearch } from './providers/http-tidal.js';
+import { collectEarly } from './search-fast.js';
 
 const PORT = Number(process.env.PORT || 8080);
 const NAME = process.env.ADDON_NAME || 'SpotiFLAC Multi-Source Lossless';
@@ -105,13 +106,15 @@ function authError(res) {
   });
 }
 
-async function searchAll(q, quality) {
-  const key = quality + ':' + q.toLowerCase().replace(/\s+/g, ' ');
+async function searchAll(q, quality, fast = false) {
+  const key = (fast ? 'fast:' : '') + quality + ':' + q.toLowerCase().replace(/\s+/g, ' ');
   const cached = cacheGet(key);
   if (cached) return cached;
 
   const jobs = [];
-  if (qobuzHost) {
+  // Qobuz uses spawnSync and blocks the event loop, so the optional fast path
+  // deliberately uses only the asynchronous providers. /search is unchanged.
+  if (qobuzHost && !fast) {
     jobs.push(Promise.resolve().then(() => qobuzHost.search(q, 25))
       .then(rows => rows.map(normalizeQobuzTrack).filter(t => t.id && t.title))
       .catch(error => {
@@ -119,23 +122,29 @@ async function searchAll(q, quality) {
         if (status.verification_required || !status.authenticated || String(error?.message || error).includes('VERIFY_REQUIRED')) {
           return [];
         }
-        console.error('[BitChord] Qobuz search error:', error?.message || error);
+        console.error('[BitChord] Qobuz search unavailable');
         return [];
       }));
   }
   if (ENABLE_TIDAL && tidalConfigured()) {
-    jobs.push(tidalSearch(q, 25).catch(error => {
-      console.error('[BitChord] Tidal search error:', error?.message || error);
+    jobs.push(tidalSearch(q, 25).catch(() => {
+      console.error('[BitChord] Tidal search unavailable');
       return [];
     }));
   }
   if (ENABLE_AMAZON && amazonConfigured()) {
-    jobs.push(amazonSearch(q, 25).catch(error => {
-      console.error('[BitChord] Amazon search error:', error?.message || error);
+    jobs.push(amazonSearch(q, 25).catch(() => {
+      console.error('[BitChord] Amazon search unavailable');
       return [];
     }));
   }
 
+  if (fast) {
+    const { tracks, complete } = await collectEarly(jobs);
+    // Fast results have their own cache; they must never hide Qobuz in /search.
+    complete.then(rows => cacheSet(key, rows));
+    return tracks;
+  }
   const groups = await Promise.all(jobs);
   const rows = groups.flat();
   return cacheSet(key, rows);
@@ -209,12 +218,12 @@ async function handle(req, res) {
     return json(res, result.success ? 200 : 400, result);
   }
 
-  if (u.pathname === '/search') {
+  if (u.pathname === '/search' || u.pathname === '/search/fast') {
     const q = (u.searchParams.get('q') || '').trim();
     if (!q) return json(res, 200, { tracks: [] });
 
     const quality = normalizeQuality(u.searchParams.get('quality'));
-    const tracks = await searchAll(q, quality);
+    const tracks = await searchAll(q, quality, u.pathname === '/search/fast');
     return json(res, 200, { tracks });
   }
 
@@ -233,7 +242,7 @@ async function handle(req, res) {
       });
       return res.end(xml);
     } catch (error) {
-      console.error('[Tidal DASH]', error.message);
+      console.error('[Tidal DASH] manifest unavailable');
       return json(res, 502, { error: 'dash_unavailable' });
     }
   }
@@ -271,7 +280,7 @@ async function handle(req, res) {
       if (message.includes('not found') || message.includes('track_not_found')) {
         return json(res, 404, { error: 'track_not_found' });
       }
-      console.error('[BitChord] Stream resolution error:', message);
+      console.error('[BitChord] Stream resolution unavailable');
       return json(res, 502, { error: 'provider_unavailable' });
     }
   }
